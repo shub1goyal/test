@@ -12,6 +12,7 @@ let genAI = null;
 if (API_KEY) {
     genAI = new GoogleGenerativeAI(API_KEY);
 }
+
 // The system instruction needs to be in a format compatible with the Gemini API
 const SYSTEM_INSTRUCTION = {
     role: "user",
@@ -23,8 +24,9 @@ const SYSTEM_INSTRUCTION = {
 // State management
 let messages = []; // Array of message objects {id, role, text}
 let isLoading = false;
-let uploadedFile = null;
+let uploadedFiles = [];
 let chatSession = null; // To hold the Gemini chat session
+
 
 // DOM Elements
 const chatContainer = document.getElementById('chat-container');
@@ -33,9 +35,7 @@ const messageInput = document.getElementById('message-input');
 const sendButton = document.getElementById('send-button');
 const attachButton = document.getElementById('attach-button');
 const fileInput = document.getElementById('file-input');
-const filePreview = document.getElementById('file-preview');
-const fileName = document.getElementById('file-name');
-const removeFileButton = document.getElementById('remove-file');
+const filePreviewsContainer = document.getElementById('file-previews');
 
 // API Key Modal Elements
 const apiKeyButton = document.getElementById('api-key-button');
@@ -43,20 +43,44 @@ const apiKeyModal = document.getElementById('api-key-modal');
 const apiKeyForm = document.getElementById('api-key-form');
 const apiKeyInput = document.getElementById('api-key-input');
 const apiKeyCancelButton = document.getElementById('api-key-cancel');
+const dropzone = document.getElementById('dropzone');
+
+
 
 // Event Listeners
 chatForm.addEventListener('submit', handleSendMessage);
 attachButton.addEventListener('click', () => fileInput.click());
 fileInput.addEventListener('change', handleFileSelection);
-removeFileButton.addEventListener('click', removeFile);
 
 // API Key Modal Event Listeners
 apiKeyButton.addEventListener('click', openApiKeyModal);
 apiKeyCancelButton.addEventListener('click', closeApiKeyModal);
 apiKeyForm.addEventListener('submit', saveApiKey);
 
+
+
+
+// Drag and Drop Event Listeners
+['dragenter', 'dragover'].forEach(eventName => {
+    document.body.addEventListener(eventName, handleDragEnter);
+});
+
+['dragleave', 'drop'].forEach(eventName => {
+    document.body.addEventListener(eventName, handleDragLeave);
+});
+
+document.body.addEventListener('dragover', handleDragOver);
+document.body.addEventListener('drop', handleDrop);
+messageInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        sendButton.click();
+    }
+});
+
 // Initialize the chat with a welcome message
 initializeChat();
+
 
 /**
  * API Key Modal Functions
@@ -85,7 +109,7 @@ function saveApiKey(event) {
     // Save to localStorage
     localStorage.setItem('gemini_api_key', newApiKey);
     API_KEY = newApiKey;
-    
+
     // Initialize the Gemini API client with the new key
     genAI = new GoogleGenerativeAI(API_KEY);
     
@@ -104,6 +128,43 @@ function saveApiKey(event) {
     
     render();
 }
+
+/**
+ * Drag and Drop Functions
+ */
+function handleDragEnter(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.dataTransfer.items && event.dataTransfer.items.length > 0) {
+        dropzone.classList.remove('hidden');
+    }
+}
+
+function handleDragLeave(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.relatedTarget === null || !dropzone.contains(event.relatedTarget)) {
+        dropzone.classList.add('hidden');
+    }
+}
+
+function handleDragOver(event) {
+    event.preventDefault();
+    event.stopPropagation();
+}
+
+function handleDrop(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    dropzone.classList.add('hidden');
+
+    const files = event.dataTransfer.files;
+    if (files.length > 0) {
+        handleFileSelection({ target: { files: files } });
+    }
+}
+
+
 
 /**
  * Initialize the chat with a welcome message
@@ -175,7 +236,20 @@ function render() {
         // Parse markdown for model messages
         if (message.role === 'model') {
             contentElement.classList.add('markdown-content');
-            contentElement.innerHTML = marked.parse(message.text || '');
+            let content = message.text || '';
+            // Check for and format pipe-separated tables
+            if (content.includes('|') && !content.includes('---')) {
+                content = content.split('\n').map(line => 
+                    line.trim().startsWith('|') && line.trim().endsWith('|') ? line : `| ${line.replace(/\s*\|\s*/g, ' | ')} |`
+                ).join('\n');
+                const lines = content.split('\n');
+                if (lines.length > 1 && lines[0].includes('|')) {
+                    const headerSeparator = lines[0].split('|').slice(1, -1).map(() => '---').join(' | ');
+                    lines.splice(1, 0, `| ${headerSeparator} |`);
+                    content = lines.join('\n');
+                }
+            }
+            contentElement.innerHTML = marked.parse(content);
         } else {
             contentElement.textContent = message.text;
         }
@@ -210,12 +284,28 @@ function render() {
     sendButton.disabled = isLoading;
     attachButton.disabled = isLoading;
     
-    // Update file preview visibility
-    if (uploadedFile) {
-        filePreview.classList.remove('hidden');
-        fileName.textContent = uploadedFile.name;
-    } else {
-        filePreview.classList.add('hidden');
+    // Update file previews
+    filePreviewsContainer.innerHTML = ''; // Clear existing previews
+    if (uploadedFiles.length > 0) {
+        uploadedFiles.forEach((file, index) => {
+            const previewElement = document.createElement('div');
+            previewElement.className = 'bg-white/10 p-2 rounded-lg flex items-center justify-between';
+            previewElement.innerHTML = `
+                <span class="text-sm text-gray-300 truncate">${file.name}</span>
+                <button data-index="${index}" class="remove-file-btn text-gray-400 hover:text-white transition-colors">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
+                </button>
+            `;
+            filePreviewsContainer.appendChild(previewElement);
+        });
+
+        // Add event listeners to new remove buttons
+        document.querySelectorAll('.remove-file-btn').forEach(button => {
+            button.addEventListener('click', (event) => {
+                const indexToRemove = event.currentTarget.dataset.index;
+                handleRemoveFile(indexToRemove);
+            });
+        });
     }
     
     // Scroll to bottom
@@ -227,28 +317,32 @@ function render() {
  * @param {Event} event - The change event from the file input
  */
 function handleFileSelection(event) {
-    const file = event.target.files[0];
-    if (file) {
-        // Check file type
-        const validTypes = ['.pdf', '.docx', '.txt'];
-        const fileExtension = file.name.substring(file.name.lastIndexOf('.'));
-        
-        if (validTypes.includes(fileExtension.toLowerCase())) {
-            uploadedFile = file;
-            render();
-        } else {
-            alert('Please upload a PDF, DOCX, or TXT file.');
-            fileInput.value = '';
+    const files = event.target.files;
+    if (files.length > 0) {
+        for (const file of files) {
+            const validTypes = ['.pdf', '.docx', '.txt'];
+            const fileExtension = file.name.substring(file.name.lastIndexOf('.'));
+
+            if (validTypes.includes(fileExtension.toLowerCase())) {
+                if (!uploadedFiles.some(f => f.name === file.name)) {
+                    uploadedFiles.push(file);
+                }
+            } else {
+                alert(`File type not supported for ${file.name}. Please upload PDF, DOCX, or TXT files.`);
+            }
         }
+        render();
+        // Reset file input to allow selecting the same file again
+        fileInput.value = '';
     }
 }
 
 /**
- * Remove the uploaded file
+ * Remove an uploaded file by its index
+ * @param {number} index - The index of the file to remove
  */
-function removeFile() {
-    uploadedFile = null;
-    fileInput.value = '';
+function handleRemoveFile(index) {
+    uploadedFiles.splice(index, 1);
     render();
 }
 
@@ -279,15 +373,15 @@ async function handleSendMessage(event) {
     
     const userMessage = messageInput.value.trim();
     
-    // Don't send if there's no message and no file
-    if (!userMessage && !uploadedFile) return;
+    // Don't send if there's no message and no files
+    if (!userMessage && uploadedFiles.length === 0) return;
     
     // Check if API key is set
     if (!API_KEY) {
         messages.push({
             id: Date.now(),
             role: 'user',
-            text: userMessage || `Please analyze this ${uploadedFile?.name} file.`
+            text: userMessage || `Please analyze the attached file(s).`
         });
         
         // Clear input
@@ -296,14 +390,7 @@ async function handleSendMessage(event) {
         // Render to show user message
         render();
         
-        // Prompt user to set API key
-        messages.push({
-            id: Date.now() + 1,
-            role: 'model',
-            text: 'You need to set your Gemini API key before using the chat. Please click the "Set API Key" button in the top right corner.'
-        });
-        
-        render();
+        // No API key, so we need to stop and wait for the user to set it
         return;
     }
     
@@ -312,20 +399,18 @@ async function handleSendMessage(event) {
         isLoading = true;
         
         // Add user message to chat
-        if (userMessage) {
-            messages.push({
-                id: Date.now(),
-                role: 'user',
-                text: userMessage
-            });
-        } else if (uploadedFile) {
-            // If only a file is uploaded without text, add a generic message
-            messages.push({
-                id: Date.now(),
-                role: 'user',
-                text: `Please analyze this ${uploadedFile.name} file.`
-            });
+        let messageText = userMessage;
+        if (uploadedFiles.length > 0) {
+            const fileNames = uploadedFiles.map(f => f.name).join(', ');
+            const fileText = `Please analyze the following file(s): ${fileNames}.`;
+            messageText = userMessage ? `${userMessage}\n\n${fileText}` : fileText;
         }
+
+        messages.push({
+            id: Date.now(),
+            role: 'user',
+            text: messageText
+        });
         
         // Clear input
         messageInput.value = '';
@@ -334,16 +419,19 @@ async function handleSendMessage(event) {
         render();
         
         // Prepare file data if present
-        let fileData = null;
-        if (uploadedFile) {
-            const base64 = await fileToBase64(uploadedFile);
-            fileData = {
-                mimeType: uploadedFile.type,
-                data: base64
-            };
-            
-            // Clear the file after sending
-            removeFile();
+        const fileParts = [];
+        if (uploadedFiles.length > 0) {
+            for (const file of uploadedFiles) {
+                const base64 = await fileToBase64(file);
+                fileParts.push({
+                    inlineData: {
+                        mimeType: file.type,
+                        data: base64
+                    }
+                });
+            }
+            // Clear the files after preparing them
+            uploadedFiles = [];
         }
         
         // Initialize chat session if it doesn't exist
@@ -395,14 +483,9 @@ async function handleSendMessage(event) {
             contentParts.push({ text: userMessage });
         }
         
-        // Add file if present
-        if (fileData) {
-            contentParts.push({
-                inlineData: {
-                    mimeType: fileData.mimeType,
-                    data: fileData.data
-                }
-            });
+        // Add files if present
+        if (fileParts.length > 0) {
+            contentParts.push(...fileParts);
         }
         
         // Send message to Gemini API and stream the response
@@ -434,13 +517,7 @@ async function handleSendMessage(event) {
         
         // Check for API key errors
         if (error.message && error.message.includes('API key not valid')) {
-            errorMessage = 'API key error: The API key you provided is not valid. Please click the "Set API Key" button to update your API key. You can get a valid key from [Google AI Studio](https://makersuite.google.com/app/apikey).';
-            
-            // Reset the API key in localStorage since it's invalid
-            localStorage.removeItem('gemini_api_key');
-            API_KEY = '';
-            genAI = null;
-            chatSession = null;
+            errorMessage = 'Your Gemini API key is invalid or not set. Please use the "Set API Key" button to enter a valid key. You can get one from [Google AI Studio](https://makersuite.google.com/app/apikey).';
         } else if (error.message) {
             errorMessage = `Error: ${error.message}`;
         }
